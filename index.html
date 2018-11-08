@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.3.4/dist/leaflet.css">
+    <title>Contra Costa Election Results</title>
+    <style>
+      #mapid{
+        height: 100vh;
+      }
+      #form-group{
+        width: 35vw;
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        height: 100vh;
+        border: 1px solid #ccc;
+        border-radius: 2px;
+        background-color: #fff;
+        z-index: 999;
+        padding: 20px;
+        overflow: hidden;
+        max-width: 300px;
+      }
+      @media (max-width:500px){
+        #form-group{
+          width: 80vw;
+          height: 35vh;
+          overflow: scroll;
+        }
+      }
+      
+    </style>
+  </head>
+  <body>
+    <div id="mapid"></div>
+    <div id="form-group" class="form-group">
+      <label for="contest">Select ballot contest:</label>
+      <select id="contest" class="form-control" name="contest"></select>
+      <svg id="legend" width="100%" height="100%" viewBox="0 0 200 1500" preserveAspectRatio="xMinYMin slice"></svg>
+    </div>
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.3.4/dist/leaflet.js"></script>
+    <script>
+
+      //set the center point of the map
+      var mymap = L.map('mapid').setView([37.898431,-121.948219], 11);
+      
+      //default current version
+      var currentVersion = 219997;
+      
+      //other basemap options: https://leaflet-extras.github.io/leaflet-providers/preview/
+      var CartoDB_Voyager = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+          attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+          subdomains: 'abcd',
+          maxZoom: 19
+      }).addTo(mymap);
+      
+      //disable scroll zoom
+      mymap.scrollWheelZoom.disable();
+      
+      //get the current version for data documents from clarity elections
+      d3.text("https://results.enr.clarityelections.com/CA/Contra_Costa/92672/current_ver.txt")
+        .then(function(d){
+        
+        currentVersion = d.toString();
+
+
+        //load shapefile, and both voter data and precinct data
+        Promise.all([
+            d3.json("ccc-precincts.json"),
+            d3.json("https://results.enr.clarityelections.com/CA/Contra_Costa/92672/" + currentVersion + "/json/ALL.json?" + new Date().getTime()),
+            d3.json("https://results.enr.clarityelections.com/CA/Contra_Costa/92672/" + currentVersion + "/json/en/summary.json?" + new Date().getTime())
+        ]).then(function(data){
+        
+        
+
+        //add drop-down menu items
+        data[2].forEach(function(d){
+          
+          //Adds <option> tags to the <select> tag in html
+          d3.select("select")
+            .append("option")
+            .attr("value", d.K)//number identifier for contest
+            .text(d.C);//the name of each contest
+        });
+        
+        //set the current contest to the initial value in dataset
+        var currentContestNumber = data[2][0].K;
+        
+        //setup color scale
+        var colorScale = d3.scaleOrdinal();
+        
+        //create data d3.map() collection for each data set to pull data from later
+        var precinctMap = d3.map(data[1].Contests, function(d){ return d.A;});
+        var contestMap = d3.map(data[2], function(d){ return d.K; })
+        
+        //set data for initial conest
+        var currentContestData = contestMap.get(currentContestNumber);
+        
+        //UNUSED... random color scheme generated based on length of data
+        var colorScheme = d3.shuffle(currentContestData.CH.map(function(d,i){
+          const t = i / currentContestData.CH.length;
+          return d3.hcl(t * 360, 70, 50);
+        }));
+        
+        //function every time they switch to new drop-down option
+        var setNewData = function(contestNumber="200"){
+
+            //set the current contest
+            currentContestNumber = contestNumber;
+          
+            //get data for this contest
+            currentContestData = contestMap.get(currentContestNumber);
+
+            //set colorScale domain/range to new data
+            colorScale.domain(currentContestData.CH);//each challenger
+            colorScale.range(d3.schemePaired);
+          
+            //remove old data when they switch the drop-down
+            d3.select("#legend")
+              .selectAll("g").remove();
+            
+            //each legend item
+            var legendBoxes = d3.select("#legend")
+              .selectAll("g")
+              .data(currentContestData.CH)
+              .enter()
+              .append("g")
+              .attr("transform", function(d,i){ return "translate(0, " + ((i*20)+5) +")"});
+              
+            legendBoxes.append("rect")
+              .attr("x", 0)
+              .attr("y", 0)
+              .attr("width", 15)
+              .attr("height", 15)
+              .style("fill", function(d){ return colorScale(d); });
+          
+            legendBoxes.append("text")
+              .attr("x", 25)
+              .attr("y", 8)
+              .attr("alignment-baseline", "middle")
+              .style("font-size", "12px")
+              .text(function(d){ return d;});
+          
+          
+            //set the style for each feature
+            geojson.setStyle(function(feature){
+
+              //get precinct data based on name of precinct
+              var getPrecinctData = precinctMap.get(feature.properties.SPCTID);
+              
+              if(typeof getPrecinctData !== "undefined" && getPrecinctData.hasOwnProperty("C")){
+                
+                var getArrayIndexFromPrecinctData = getPrecinctData.C.indexOf(currentContestNumber);
+
+                if(getArrayIndexFromPrecinctData !== -1){
+                  var getContestFromPrecinct = getPrecinctData.V[getArrayIndexFromPrecinctData];
+                  var getIndexOfMostVotes = getContestFromPrecinct.indexOf(Math.max(...getContestFromPrecinct));
+                  
+                  //if total number of votes is less than 10, show gray
+                  if(getContestFromPrecinct.reduce((a, b) => a + b, 0) < 10){
+                    return {fillColor: "#eeeeee"};
+                  }
+                  return {
+                    fillColor: colorScale(currentContestData.CH[getIndexOfMostVotes])
+                  }
+                } else {
+                  return {fillColor: "#eeeeee"};
+                }
+              } else {
+                return {fillColor: "#eeeeee"};
+              }
+            }); 
+        }
+        
+        
+        d3.select("select")
+          .on("change", function(){ setNewData(d3.select(this).node().value); });
+        
+        //default map styles
+        var geojson = L.geoJSON(data[0], {
+            style: function (feature) {
+              
+                return {
+                  fillColor: "#eee",
+                  stroke: true,
+                  weight: 0.5,
+                  color: "#000",
+                  fillOpacity: 0.8
+                };
+            }
+          }).bindPopup(function (layer) {
+          
+
+              var currentContestData = contestMap.get(currentContestNumber);
+          
+              var getPrecinctData = precinctMap.get(layer.feature.properties.SPCTID);
+              if(typeof getPrecinctData !== "undefined" && getPrecinctData.hasOwnProperty("C")){
+                var getArrayIndexFromPrecinctData = getPrecinctData.C.indexOf(currentContestNumber);
+                if(getArrayIndexFromPrecinctData !== -1){
+                  
+                  var getContestFromPrecinct = getPrecinctData.V[getArrayIndexFromPrecinctData];
+                  var fullstring = "<strong>Precinct: " + layer.feature.properties.SPCTNM + "</strong><br>";
+                  currentContestData.CH.forEach(function(j,i){
+                    if(getContestFromPrecinct[i] > 5){
+                      fullstring += j + ": " + getContestFromPrecinct[i] + "<br>";
+                    }
+                  });
+                  return fullstring + "<small>* Vote totals less than 5 not shown</small>";
+                  
+                } else {
+                  return "No Data for this precinct on this issue.";
+                }
+              } else {
+                return "No Data for this precinct on this issue.";
+              }
+
+          }).addTo(mymap);
+        
+          setNewData();
+        
+      });
+    });
+      
+    
+    </script>
+  </body>
+</html>
